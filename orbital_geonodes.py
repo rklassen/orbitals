@@ -46,7 +46,7 @@ def create_base_mesh_with_points(max_n=4):
     
     for n in range(1, max_n + 1):
         for l in range(0, n):  # l goes from 0 to n-1
-            for m in range(0, l + 1):  # m goes from -l to +l
+            for m in range(0, l + 1):  # m goes from 0 to l (positive m only, symmetrical)
                 pos = create_orbital_point(n, l, m)
                 
                 # Create point cloud for this orbital
@@ -178,11 +178,12 @@ def create_orbital_cloud_mesh(n, l, m, position, num_points=500):
                 z = r * np.cos(theta) + position[2]
                 points.append((x, y, z))
                 
-                # Calculate phase from wave function
-                # Phase is the argument of the complex wave function value
+                # Calculate sign from wave function's real part
                 psi = R * Y
-                phase = np.angle(psi) / np.pi  # normalize to [-1, 1]
-                phases.append(float(phase))
+                # Convert sign to unorm range: +1 -> 1.0, -1 -> 0.0
+                sign = 1.0 if psi.real >= 0 else -1.0
+                unorm_value = 0.5 * sign + 0.5
+                phases.append(float(unorm_value))
         except:
             continue
     
@@ -195,7 +196,7 @@ def create_orbital_cloud_mesh(n, l, m, position, num_points=500):
         y = r * np.sin(theta) * np.sin(phi) + position[1]
         z = r * np.cos(theta) + position[2]
         points.append((x, y, z))
-        phases.append(0.0)  # default phase for fill points
+        phases.append(0.5)  # default unorm value (neutral) for fill points
     
     return points[:num_points], phases[:num_points]
 
@@ -230,7 +231,7 @@ def create_instance_sphere():
     # Named Attribute node for phase
     phase_attr = nodes.new(type='ShaderNodeAttribute')
     phase_attr.location = (-400, 0)
-    phase_attr.attribute_name = "phase"
+    phase_attr.attribute_name = "wf_sign"
     
     # Greater Than comparison - true (1) if phase > 0.5, false (0) otherwise
     # Since phase is now in unorm range [0, 1], compare to 0.5 to distinguish positive/negative
@@ -303,6 +304,7 @@ def setup_geometry_nodes(base_obj, instance_obj):
     sign_attr = nodes.new(type='ShaderNodeAttribute')
     sign_attr.location = (-400, 0)
     sign_attr.attribute_name = "wf_sign"
+    sign_attr.attribute_type = 'INSTANCER'  # Read from instance data, not geometry
     
     # Greater Than comparison (wf_sign > 0.5)
     # wf_sign is in unorm range [0, 1], so > 0.5 means positive
@@ -316,10 +318,10 @@ def setup_geometry_nodes(base_obj, instance_obj):
     magenta.location = (-200, -200)
     magenta.outputs['Color'].default_value = (1.0, 0.0, 1.0, 1.0)
     
-    # Mint color (for positive, wf_sign > 0.5)
+    # Mint color (for positive, wf_sign > 0.5) - #00FFB3
     mint = nodes.new(type='ShaderNodeRGB')
     mint.location = (-200, -350)
-    mint.outputs['Color'].default_value = (0.596, 1.0, 0.596, 1.0)
+    mint.outputs['Color'].default_value = (0.0, 1.0, 0.702, 1.0)
     
     # Mix colors
     mix_color = nodes.new(type='ShaderNodeMix')
@@ -434,17 +436,25 @@ def setup_geometry_nodes(base_obj, instance_obj):
     normalize_l.inputs['To Min'].default_value = 0.0
     normalize_l.inputs['To Max'].default_value = 1.0
     
-    # Named Attribute node for phase
-    phase_attribute = nodes.new(type='GeometryNodeInputNamedAttribute')
-    phase_attribute.location = (-400, -650)
-    phase_attribute.inputs['Name'].default_value = "phase"
-    phase_attribute.data_type = 'FLOAT'
+    # Capture Attribute node to transfer wf_sign from points to instances
+    capture_wf_sign = nodes.new(type='GeometryNodeCaptureAttribute')
+    capture_wf_sign.location = (-250, -150)
+    capture_wf_sign.domain = 'POINT'
+    # Add capture item for wf_sign (creates input/output sockets)
+    capture_item = capture_wf_sign.capture_items.new('FLOAT', 'wf_sign')
     
-    # Store phase attribute to pass through to instances
-    store_phase = nodes.new(type='GeometryNodeStoreNamedAttribute')
-    store_phase.location = (0, 0)
-    store_phase.inputs['Name'].default_value = "phase"
-    store_phase.data_type = 'FLOAT'
+    # Named Attribute node to read wf_sign from base mesh points
+    wf_sign_input = nodes.new(type='GeometryNodeInputNamedAttribute')
+    wf_sign_input.location = (-450, -200)
+    wf_sign_input.inputs['Name'].default_value = "wf_sign"
+    wf_sign_input.data_type = 'FLOAT'
+    
+    # Store the captured wf_sign on the instances
+    store_wf_sign = nodes.new(type='GeometryNodeStoreNamedAttribute')
+    store_wf_sign.location = (0, 0)
+    store_wf_sign.inputs['Name'].default_value = "wf_sign"
+    store_wf_sign.data_type = 'FLOAT'
+    store_wf_sign.domain = 'INSTANCE'
     
     # Set Material node - use the material we just created
     set_material = nodes.new(type='GeometryNodeSetMaterial')
@@ -460,7 +470,7 @@ def setup_geometry_nodes(base_obj, instance_obj):
     
     # Link nodes
     links.new(input_node.outputs['Geometry'], mesh_to_points.inputs['Mesh'])
-    links.new(mesh_to_points.outputs['Points'], instance_on_points.inputs['Points'])
+    # Note: mesh_to_points connects to capture_wf_sign, then to instance_on_points (see below)
     links.new(object_info.outputs['Geometry'], instance_on_points.inputs['Instance'])
     
     # Link quantum number attributes
@@ -473,12 +483,19 @@ def setup_geometry_nodes(base_obj, instance_obj):
     links.new(color_low.outputs['Color'], color_mix.inputs[6])  # A input
     links.new(color_high.outputs['Color'], color_mix.inputs[7])  # B input
     
-    # Link phase attribute to store
-    links.new(instance_on_points.outputs['Instances'], store_phase.inputs['Geometry'])
-    links.new(phase_attribute.outputs['Attribute'], store_phase.inputs['Value'])
+    # Capture wf_sign from points and transfer to instances
+    links.new(mesh_to_points.outputs['Points'], capture_wf_sign.inputs['Geometry'])
+    links.new(wf_sign_input.outputs['Attribute'], capture_wf_sign.inputs['wf_sign'])
+    
+    # Use captured points for instancing (this preserves the attribute value per instance)
+    links.new(capture_wf_sign.outputs['Geometry'], instance_on_points.inputs['Points'])
+    
+    # Store the captured wf_sign attribute on the instances
+    links.new(instance_on_points.outputs['Instances'], store_wf_sign.inputs['Geometry'])
+    links.new(capture_wf_sign.outputs['wf_sign'], store_wf_sign.inputs['Value'])
     
     # Link color to store attribute
-    links.new(store_phase.outputs['Geometry'], store_color.inputs['Geometry'])
+    links.new(store_wf_sign.outputs['Geometry'], store_color.inputs['Geometry'])
     links.new(color_mix.outputs[2], store_color.inputs['Value'])  # Result output
     
     # Link to material and output
@@ -492,14 +509,15 @@ def setup_geometry_nodes(base_obj, instance_obj):
 def add_text_labels():
     """Add text labels for axis identification."""
     label_data = [
-        ("X: Angular Momentum (l)", (6, -2, 0)),
-        ("Y: Magnetic Number (m)", (0, 6, 0)),
-        ("Z: Principal Number (n)", (0, 0, 10))
+        ("X: Angular Momentum (l)", (6, -2, 0), "Label X"),
+        ("Y: Magnetic Number (m)", (0, 6, 0), "Label Y"),
+        ("Z: Principal Number (n)", (0, 0, 10), "Label Z")
     ]
     
-    for text, location in label_data:
+    for text, location, name in label_data:
         bpy.ops.object.text_add(location=location)
         text_obj = bpy.context.active_object
+        text_obj.name = name
         text_obj.data.body = text
         text_obj.scale = (0.5, 0.5, 0.5)
 
