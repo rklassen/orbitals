@@ -304,18 +304,19 @@ def setup_geometry_nodes(base_obj, instance_obj):
     sign_attr.location = (-400, 0)
     sign_attr.attribute_name = "wf_sign"
     
-    # Map Range
-    map_range = nodes.new(type='ShaderNodeMapRange')
-    map_range.location = (-200, 0)
-    map_range.inputs['From Min'].default_value = -1.0
-    map_range.inputs['From Max'].default_value = 1.0
+    # Greater Than comparison (wf_sign > 0.5)
+    # wf_sign is in unorm range [0, 1], so > 0.5 means positive
+    greater_than = nodes.new(type='ShaderNodeMath')
+    greater_than.location = (-200, 0)
+    greater_than.operation = 'GREATER_THAN'
+    greater_than.inputs[1].default_value = 0.5
     
-    # Magenta color
+    # Magenta color (for negative, wf_sign <= 0.5)
     magenta = nodes.new(type='ShaderNodeRGB')
     magenta.location = (-200, -200)
     magenta.outputs['Color'].default_value = (1.0, 0.0, 1.0, 1.0)
     
-    # Mint color
+    # Mint color (for positive, wf_sign > 0.5)
     mint = nodes.new(type='ShaderNodeRGB')
     mint.location = (-200, -350)
     mint.outputs['Color'].default_value = (0.596, 1.0, 0.596, 1.0)
@@ -326,8 +327,8 @@ def setup_geometry_nodes(base_obj, instance_obj):
     mix_color.data_type = 'RGBA'
     
     # Link material nodes
-    links.new(sign_attr.outputs['Fac'], map_range.inputs['Value'])
-    links.new(map_range.outputs['Result'], mix_color.inputs['Factor'])
+    links.new(sign_attr.outputs['Fac'], greater_than.inputs[0])
+    links.new(greater_than.outputs['Value'], mix_color.inputs['Factor'])
     links.new(magenta.outputs['Color'], mix_color.inputs[6])
     links.new(mint.outputs['Color'], mix_color.inputs[7])
     links.new(mix_color.outputs[2], emission.inputs['Color'])
