@@ -14,7 +14,7 @@ def clear_scene():
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
-def create_orbital_point(n, l, m, spacing=3.0):
+def create_orbital_point(n, l, m, spacing=12.0):
     """
     Create a point in 3D space for an orbital configuration.
     
@@ -26,7 +26,7 @@ def create_orbital_point(n, l, m, spacing=3.0):
     """
     x = l * spacing
     y = m * spacing
-    z = (n - 1) * - spacing + 9
+    z = (4 - n) * spacing
     return (x, y, z)
 
 def create_base_mesh_with_points(max_n=4):
@@ -42,21 +42,13 @@ def create_base_mesh_with_points(max_n=4):
     m_values = []
     phase_values = []
     
-    print(f"Generating orbital clouds for n=1 to n={max_n}...")
-    
     for n in range(1, max_n + 1):
         for l in range(0, n):  # l goes from 0 to n-1
             for m in range(0, l + 1):  # m goes from -l to +l
                 pos = create_orbital_point(n, l, m)
                 
                 # Create point cloud for this orbital
-                print(f"Creating orbital n={n}, l={l}, m={m}...")
                 orbital_points, orbital_phases = create_orbital_cloud_mesh(n, l, m, pos, num_points=300)
-                
-                if len(orbital_points) == 0:
-                    print(f"Warning: No points generated for n={n}, l={l}, m={m}")
-                    continue
-                    
                 all_vertices.extend(orbital_points)
                 phase_values.extend(orbital_phases)
                 
@@ -66,8 +58,10 @@ def create_base_mesh_with_points(max_n=4):
                     l_values.append(l)
                     m_values.append(m)
     
+    # Check if we have any vertices before proceeding
     if len(all_vertices) == 0:
         print("ERROR: No vertices generated!")
+        print("Check if scipy and numpy are installed in Blender's Python")
         return None
     
     print(f"Total points generated: {len(all_vertices)}")
@@ -77,20 +71,61 @@ def create_base_mesh_with_points(max_n=4):
     mesh.from_pydata(all_vertices, [], [])
     mesh.update()
     
+    # Verify mesh has vertices
+    if len(mesh.vertices) == 0:
+        print(f"ERROR: Mesh has no vertices even though all_vertices had {len(all_vertices)} points!")
+        print("This shouldn't happen - mesh.from_pydata failed")
+        return None
+    
+    print(f"Mesh created successfully with {len(mesh.vertices)} vertices")
+    
+    # Create and link object FIRST - attributes need the object in the scene to initialize
     obj = bpy.data.objects.new("OrbitalGrid", mesh)
     bpy.context.collection.objects.link(obj)
+    print(f"✓ Object created and linked: {obj.name}")
     
-    # Store quantum number data as custom attributes
-    n_attr = mesh.attributes.new(name="n", type='INT', domain='POINT')
-    l_attr = mesh.attributes.new(name="l", type='INT', domain='POINT')
-    m_attr = mesh.attributes.new(name="m", type='INT', domain='POINT')
-    sign_attr = mesh.attributes.new(name="wf_sign", type='FLOAT', domain='POINT')
+    # NOW create attributes (they will initialize properly because object is in scene)
+    print(f"Creating attributes for {len(mesh.vertices)} vertices")
+    print(f"n_values: {len(n_values)}, l_values: {len(l_values)}, m_values: {len(m_values)}, phase_values: {len(phase_values)}")
     
-    for idx, (n, l, m, sign) in enumerate(zip(n_values, l_values, m_values, phase_values)):
-        n_attr.data[idx].value = n
-        l_attr.data[idx].value = l
-        m_attr.data[idx].value = m
-        sign_attr.data[idx].value = sign
+    n_attr = mesh.attributes.new(name="n", type='FLOAT', domain='POINT')
+    l_attr = mesh.attributes.new(name="l", type='FLOAT', domain='POINT')
+    m_attr = mesh.attributes.new(name="m", type='FLOAT', domain='POINT')
+    wf_sign_attr = mesh.attributes.new(name="wf_sign", type='FLOAT', domain='POINT')
+    
+    # Force update after creating attributes
+    mesh.update()
+    obj.update_from_editmode()
+    bpy.context.view_layer.update()
+    
+    print(f"✓ Attributes created and scene updated")
+    print(f"  Attribute sizes: n={len(n_attr.data)}, l={len(l_attr.data)}, m={len(m_attr.data)}, wf_sign={len(wf_sign_attr.data)}")
+    print(f"  Value list sizes: n={len(n_values)}, l={len(l_values)}, m={len(m_values)}, phase={len(phase_values)}")
+    
+    # If attributes still have size 0, try reacquiring them
+    if len(n_attr.data) == 0:
+        print("  Attributes have size 0, reacquiring from mesh...")
+        n_attr = mesh.attributes.get("n")
+        l_attr = mesh.attributes.get("l")
+        m_attr = mesh.attributes.get("m")
+        wf_sign_attr = mesh.attributes.get("wf_sign")
+        print(f"  After reacquiring: n={len(n_attr.data)}, l={len(l_attr.data)}, m={len(m_attr.data)}, wf_sign={len(wf_sign_attr.data)}")
+    
+    # Use foreach_set for efficient bulk assignment
+    try:
+        n_attr.data.foreach_set("value", n_values)
+        l_attr.data.foreach_set("value", l_values)
+        m_attr.data.foreach_set("value", m_values)
+        wf_sign_attr.data.foreach_set("value", phase_values)
+        print(f"✓ Attributes assigned using foreach_set")
+    except Exception as e:
+        print(f"foreach_set failed, using loop: {e}")
+        for idx, (n, l, m, sign) in enumerate(zip(n_values, l_values, m_values, phase_values)):
+            n_attr.data[idx].value = n
+            l_attr.data[idx].value = l
+            m_attr.data[idx].value = m
+            wf_sign_attr.data[idx].value = sign
+        print(f"✓ Attributes assigned using loop")
     
     return obj
 
@@ -141,10 +176,11 @@ def create_orbital_cloud_mesh(n, l, m, position, num_points=500):
                 z = r * np.cos(theta) + position[2]
                 points.append((x, y, z))
                 
-                # Calculate sign of the wave function (real part)
-                psi = R * Y.real  # Use real part for sign
-                sign = 1.0 if psi >= 0 else -1.0
-                phases.append(float(sign))
+                # Calculate phase from wave function
+                # Phase is the argument of the complex wave function value
+                psi = R * Y
+                phase = np.angle(psi) / np.pi  # normalize to [-1, 1]
+                phases.append(float(phase))
         except:
             continue
     
@@ -162,12 +198,14 @@ def create_orbital_cloud_mesh(n, l, m, position, num_points=500):
     return points[:num_points], phases[:num_points]
 
 def create_instance_sphere():
-    """Create a tiny sphere to be instanced at each point in the orbital cloud."""
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=0.03, location=(0, 0, 0))
+    """Create a tiny icosphere to be instanced at each point in the orbital cloud."""
+    # Calculate radius for 1.618x volume: r_new = r_old * (1.618)^(1/3)
+    radius = 0.03 * (1.618 ** (1/3))  # ~0.0352
+    bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1, radius=radius, location=(0, 0, 0))
     sphere = bpy.context.active_object
     sphere.name = "OrbitalParticle"
     
-    # Add material with sign-based color emission (no diffuse)
+    # Add material with phase-based color emission
     mat = bpy.data.materials.new(name="OrbitalMaterial")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -178,18 +216,17 @@ def create_instance_sphere():
     output = nodes.new(type='ShaderNodeOutputMaterial')
     output.location = (400, 0)
     
-    # Emission shader (only emission, no diffuse)
+    # Emission shader
     emission = nodes.new(type='ShaderNodeEmission')
     emission.location = (200, 0)
     emission.inputs['Strength'].default_value = 3.0
     
-    # Named Attribute node for wave function sign
-    sign_attr = nodes.new(type='ShaderNodeAttribute')
-    sign_attr.location = (-400, 0)
-    sign_attr.attribute_name = "wf_sign"
+    # Named Attribute node for phase
+    phase_attr = nodes.new(type='ShaderNodeAttribute')
+    phase_attr.location = (-400, 0)
+    phase_attr.attribute_name = "phase"
     
-    # Map Range to convert sign from [-1, 1] to [0, 1] for color mixing
-    # -1 (negative) -> 0 (cyan), +1 (positive) -> 1 (mint)
+    # Map Range to convert phase from [-1, 1] to [0, 1] for color mixing
     map_range = nodes.new(type='ShaderNodeMapRange')
     map_range.location = (-200, 0)
     map_range.inputs['From Min'].default_value = -1.0
@@ -197,26 +234,26 @@ def create_instance_sphere():
     map_range.inputs['To Min'].default_value = 0.0
     map_range.inputs['To Max'].default_value = 1.0
     
-    # Cyan color (RGB: 0, 255/255, 255/255) for negative wave function
-    cyan_color = nodes.new(type='ShaderNodeRGB')
-    cyan_color.location = (-200, -200)
-    cyan_color.outputs['Color'].default_value = (0.0, 1.0, 1.0, 1.0)
-    
-    # Mint color (RGB: 152/255, 255/255, 152/255) for positive wave function
+    # Mint color (RGB: 152/255, 255/255, 152/255)
     mint_color = nodes.new(type='ShaderNodeRGB')
-    mint_color.location = (-200, -350)
+    mint_color.location = (-200, -200)
     mint_color.outputs['Color'].default_value = (0.596, 1.0, 0.596, 1.0)
     
-    # Mix colors based on sign
+    # Magenta color (RGB: 255/255, 0/255, 255/255)
+    magenta_color = nodes.new(type='ShaderNodeRGB')
+    magenta_color.location = (-200, -350)
+    magenta_color.outputs['Color'].default_value = (1.0, 0.0, 1.0, 1.0)
+    
+    # Mix colors based on phase
     mix_color = nodes.new(type='ShaderNodeMix')
     mix_color.location = (0, 0)
     mix_color.data_type = 'RGBA'
     
     # Link nodes
-    links.new(sign_attr.outputs['Fac'], map_range.inputs['Value'])
+    links.new(phase_attr.outputs['Fac'], map_range.inputs['Value'])
     links.new(map_range.outputs['Result'], mix_color.inputs['Factor'])
-    links.new(cyan_color.outputs['Color'], mix_color.inputs[6])  # A (negative/cyan)
-    links.new(mint_color.outputs['Color'], mix_color.inputs[7])  # B (positive/mint)
+    links.new(mint_color.outputs['Color'], mix_color.inputs[6])  # A
+    links.new(magenta_color.outputs['Color'], mix_color.inputs[7])  # B
     links.new(mix_color.outputs[2], emission.inputs['Color'])
     links.new(emission.outputs['Emission'], output.inputs['Surface'])
     
@@ -232,11 +269,19 @@ def setup_geometry_nodes(base_obj, instance_obj):
         base_obj: the object with points (orbital positions)
         instance_obj: the object to instance at each point
     """
-    # Add geometry nodes modifier
-    modifier = base_obj.modifiers.new(name="OrbitalInstances", type='NODES')
+    print(f"Setting up geometry nodes...")
+    print(f"  Base object: {base_obj.name}")
+    print(f"  Instance object: {instance_obj.name}")
     
-    # Create new node tree
-    node_tree = bpy.data.node_groups.new(name="OrbitalGeometry", type='GeometryNodeTree')
+    # Add geometry nodes modifier first
+    modifier = base_obj.modifiers.new(name="OrbitalInstances", type='NODES')
+    print(f"  Created modifier: {modifier.name}")
+    
+    # Create new node tree with unique name
+    import time
+    node_tree_name = f"OrbitalGeometry_{int(time.time())}"
+    node_tree = bpy.data.node_groups.new(name=node_tree_name, type='GeometryNodeTree')
+    print(f"  Created node group: {node_tree.name}")
     modifier.node_group = node_tree
     
     # Create nodes
@@ -316,17 +361,17 @@ def setup_geometry_nodes(base_obj, instance_obj):
     normalize_l.inputs['To Min'].default_value = 0.0
     normalize_l.inputs['To Max'].default_value = 1.0
     
-    # Named Attribute node for wave function sign
-    sign_attribute = nodes.new(type='GeometryNodeInputNamedAttribute')
-    sign_attribute.location = (-400, -650)
-    sign_attribute.inputs['Name'].default_value = "wf_sign"
-    sign_attribute.data_type = 'FLOAT'
+    # Named Attribute node for phase
+    phase_attribute = nodes.new(type='GeometryNodeInputNamedAttribute')
+    phase_attribute.location = (-400, -650)
+    phase_attribute.inputs['Name'].default_value = "phase"
+    phase_attribute.data_type = 'FLOAT'
     
-    # Store sign attribute to pass through to instances
-    store_sign = nodes.new(type='GeometryNodeStoreNamedAttribute')
-    store_sign.location = (0, 0)
-    store_sign.inputs['Name'].default_value = "wf_sign"
-    store_sign.data_type = 'FLOAT'
+    # Store phase attribute to pass through to instances
+    store_phase = nodes.new(type='GeometryNodeStoreNamedAttribute')
+    store_phase.location = (0, 0)
+    store_phase.inputs['Name'].default_value = "phase"
+    store_phase.data_type = 'FLOAT'
     
     # Set Material node
     set_material = nodes.new(type='GeometryNodeSetMaterial')
@@ -355,17 +400,21 @@ def setup_geometry_nodes(base_obj, instance_obj):
     links.new(color_low.outputs['Color'], color_mix.inputs[6])  # A input
     links.new(color_high.outputs['Color'], color_mix.inputs[7])  # B input
     
-    # Link sign attribute to store
-    links.new(instance_on_points.outputs['Instances'], store_sign.inputs['Geometry'])
-    links.new(sign_attribute.outputs['Attribute'], store_sign.inputs['Value'])
+    # Link phase attribute to store
+    links.new(instance_on_points.outputs['Instances'], store_phase.inputs['Geometry'])
+    links.new(phase_attribute.outputs['Attribute'], store_phase.inputs['Value'])
     
     # Link color to store attribute
-    links.new(store_sign.outputs['Geometry'], store_color.inputs['Geometry'])
+    links.new(store_phase.outputs['Geometry'], store_color.inputs['Geometry'])
     links.new(color_mix.outputs[2], store_color.inputs['Value'])  # Result output
     
     # Link to material and output
     links.new(store_color.outputs['Geometry'], set_material.inputs['Geometry'])
     links.new(set_material.outputs['Geometry'], output_node.inputs['Geometry'])
+    
+    print(f"✓ Geometry nodes setup complete")
+    print(f"  Modifier: {modifier.name}")
+    print(f"  Instance object reference: {instance_obj.name}")
 
 def add_text_labels():
     """Add text labels for axis identification."""
@@ -401,26 +450,47 @@ def setup_camera_and_lighting():
 
 def main():
     """Main function to create the orbital visualization."""
+    print("="*60)
+    print("ORBITAL VISUALIZATION SCRIPT STARTING")
+    print("="*60)
+    
     # Clear existing scene
     clear_scene()
+    print("✓ Scene cleared")
     
     # Create the base mesh with orbital points
     max_n = 4  # Generate orbitals up to n=4
     base_obj = create_base_mesh_with_points(max_n=max_n)
     
     if base_obj is None:
-        print("Failed to create orbital mesh!")
+        print("="*60)
+        print("✗ ERROR: Failed to create orbital mesh - no vertices generated!")
+        print("This usually means scipy/numpy is not installed in Blender's Python")
+        print("="*60)
         return
+    
+    print(f"✓ Base mesh created: {base_obj.name} with {len(base_obj.data.vertices)} vertices")
     
     # Create instance object (sphere)
     instance_obj = create_instance_sphere()
+    print(f"✓ Instance sphere created: {instance_obj.name}")
     
     # Hide the instance object from viewport and render
     instance_obj.hide_viewport = True
     instance_obj.hide_render = True
     
     # Set up geometry nodes
+    print("Setting up geometry nodes...")
     setup_geometry_nodes(base_obj, instance_obj)
+    print("✓ Geometry nodes setup attempted")
+    
+    # If geometry nodes already exist from previous run, update the instance object reference
+    for mod in base_obj.modifiers:
+        if mod.type == 'NODES' and mod.node_group:
+            for node in mod.node_group.nodes:
+                if node.type == 'OBJECT_INFO':
+                    node.inputs['Object'].default_value = instance_obj
+                    print(f"✓ Updated Object Info reference in existing modifier: {mod.name}")
     
     # Add text labels
     add_text_labels()
@@ -432,10 +502,15 @@ def main():
     bpy.context.view_layer.objects.active = base_obj
     base_obj.select_set(True)
     
-    print(f"Orbital visualization created with n=1 to n={max_n}")
-    print("X axis: Angular momentum (l) - 0=s, 1=p, 2=d, 3=f")
-    print("Y axis: Magnetic quantum number (m)")
-    print("Z axis: Principal quantum number (n)")
+    print("="*60)
+    print(f"✓ ORBITAL VISUALIZATION COMPLETE")
+    print(f"  Created n=1 to n={max_n}")
+    print("  X axis: Angular momentum (l) - 0=s, 1=p, 2=d, 3=f")
+    print("  Y axis: Magnetic quantum number (m)")
+    print("  Z axis: Principal quantum number (n)")
+    print(f"  Total vertices: {len(base_obj.data.vertices)}")
+    print(f"  Modifiers on {base_obj.name}: {[m.name for m in base_obj.modifiers]}")
+    print("="*60)
 
 if __name__ == "__main__":
     main()
