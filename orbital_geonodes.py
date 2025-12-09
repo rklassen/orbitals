@@ -11,8 +11,10 @@ import math
 
 def clear_scene():
     """Remove all mesh objects from the scene."""
-    bpy.ops.object.select_all(action='SELECT')
-    bpy.ops.object.delete(use_global=False)
+    # Use direct removal instead of operators to handle unselectable objects
+    objects_to_remove = [obj for obj in bpy.data.objects]
+    for obj in objects_to_remove:
+        bpy.data.objects.remove(obj, do_unlink=True)
 
 def create_orbital_point(n, l, m, spacing=12.0):
     """
@@ -206,6 +208,10 @@ def create_instance_sphere():
     sphere.name = "OrbitalParticle"
     
     # Add material with phase-based color emission
+    # Remove existing material if it exists to ensure we get the updated version
+    if "OrbitalMaterial" in bpy.data.materials:
+        bpy.data.materials.remove(bpy.data.materials["OrbitalMaterial"])
+    
     mat = bpy.data.materials.new(name="OrbitalMaterial")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -226,13 +232,12 @@ def create_instance_sphere():
     phase_attr.location = (-400, 0)
     phase_attr.attribute_name = "phase"
     
-    # Map Range to convert phase from [-1, 1] to [0, 1] for color mixing
-    map_range = nodes.new(type='ShaderNodeMapRange')
-    map_range.location = (-200, 0)
-    map_range.inputs['From Min'].default_value = -1.0
-    map_range.inputs['From Max'].default_value = 1.0
-    map_range.inputs['To Min'].default_value = 0.0
-    map_range.inputs['To Max'].default_value = 1.0
+    # Greater Than comparison - true (1) if phase > 0.5, false (0) otherwise
+    # Since phase is now in unorm range [0, 1], compare to 0.5 to distinguish positive/negative
+    greater_than = nodes.new(type='ShaderNodeMath')
+    greater_than.location = (-200, 0)
+    greater_than.operation = 'GREATER_THAN'
+    greater_than.inputs[1].default_value = 0.5  # threshold
     
     # Mint color (RGB: 152/255, 255/255, 152/255)
     mint_color = nodes.new(type='ShaderNodeRGB')
@@ -250,8 +255,8 @@ def create_instance_sphere():
     mix_color.data_type = 'RGBA'
     
     # Link nodes
-    links.new(phase_attr.outputs['Fac'], map_range.inputs['Value'])
-    links.new(map_range.outputs['Result'], mix_color.inputs['Factor'])
+    links.new(phase_attr.outputs['Fac'], greater_than.inputs[0])
+    links.new(greater_than.outputs['Value'], mix_color.inputs['Factor'])
     links.new(mint_color.outputs['Color'], mix_color.inputs[6])  # A
     links.new(magenta_color.outputs['Color'], mix_color.inputs[7])  # B
     links.new(mix_color.outputs[2], emission.inputs['Color'])
@@ -273,7 +278,74 @@ def setup_geometry_nodes(base_obj, instance_obj):
     print(f"  Base object: {base_obj.name}")
     print(f"  Instance object: {instance_obj.name}")
     
-    # Add geometry nodes modifier first
+    # Clear all materials from the file
+    for mat in list(bpy.data.materials):
+        bpy.data.materials.remove(mat)
+    print("  ✓ Cleared all materials")
+    
+    # Create new material with magenta/mint emission
+    mat = bpy.data.materials.new(name="OrbitalMaterial")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+    
+    # Output node
+    output = nodes.new(type='ShaderNodeOutputMaterial')
+    output.location = (400, 0)
+    
+    # Emission shader
+    emission = nodes.new(type='ShaderNodeEmission')
+    emission.location = (200, 0)
+    emission.inputs['Strength'].default_value = 3.0
+    
+    # Named Attribute node for wave function sign
+    sign_attr = nodes.new(type='ShaderNodeAttribute')
+    sign_attr.location = (-400, 0)
+    sign_attr.attribute_name = "wf_sign"
+    
+    # Map Range
+    map_range = nodes.new(type='ShaderNodeMapRange')
+    map_range.location = (-200, 0)
+    map_range.inputs['From Min'].default_value = -1.0
+    map_range.inputs['From Max'].default_value = 1.0
+    
+    # Magenta color
+    magenta = nodes.new(type='ShaderNodeRGB')
+    magenta.location = (-200, -200)
+    magenta.outputs['Color'].default_value = (1.0, 0.0, 1.0, 1.0)
+    
+    # Mint color
+    mint = nodes.new(type='ShaderNodeRGB')
+    mint.location = (-200, -350)
+    mint.outputs['Color'].default_value = (0.596, 1.0, 0.596, 1.0)
+    
+    # Mix colors
+    mix_color = nodes.new(type='ShaderNodeMix')
+    mix_color.location = (0, 0)
+    mix_color.data_type = 'RGBA'
+    
+    # Link material nodes
+    links.new(sign_attr.outputs['Fac'], map_range.inputs['Value'])
+    links.new(map_range.outputs['Result'], mix_color.inputs['Factor'])
+    links.new(magenta.outputs['Color'], mix_color.inputs[6])
+    links.new(mint.outputs['Color'], mix_color.inputs[7])
+    links.new(mix_color.outputs[2], emission.inputs['Color'])
+    links.new(emission.outputs['Emission'], output.inputs['Surface'])
+    
+    # Apply material to instance object
+    if len(instance_obj.data.materials) == 0:
+        instance_obj.data.materials.append(mat)
+    else:
+        instance_obj.data.materials[0] = mat
+    print("  ✓ Created and applied OrbitalMaterial")
+    
+    # Assign material to base object so geometry nodes can use it
+    base_obj.data.materials.clear()
+    base_obj.data.materials.append(mat)
+    print(f"  ✓ Assigned {mat.name} to {base_obj.name}")
+    
+    # Add geometry nodes modifier
     modifier = base_obj.modifiers.new(name="OrbitalInstances", type='NODES')
     print(f"  Created modifier: {modifier.name}")
     
@@ -373,11 +445,11 @@ def setup_geometry_nodes(base_obj, instance_obj):
     store_phase.inputs['Name'].default_value = "phase"
     store_phase.data_type = 'FLOAT'
     
-    # Set Material node
+    # Set Material node - use the material we just created
     set_material = nodes.new(type='GeometryNodeSetMaterial')
     set_material.location = (400, 0)
-    if instance_obj.data.materials:
-        set_material.inputs['Material'].default_value = instance_obj.data.materials[0]
+    set_material.inputs['Material'].default_value = mat
+    print(f"  ✓ Set Material node configured with {mat.name}")
     
     # Store Named Attribute node for color
     store_color = nodes.new(type='GeometryNodeStoreNamedAttribute')
