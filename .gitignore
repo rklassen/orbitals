@@ -29,6 +29,7 @@ Thumbs.db
 *.blend
 *.blend1
 *.blend2
+frames/
 
 # Temporary files
 *.tmp

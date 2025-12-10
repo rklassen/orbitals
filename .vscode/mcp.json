@@ -1,6 +1,6 @@
 {
 	"servers": {
-		"my-mcp-server-830b1ed8": {
+		"blender-mcp-830b1ed8": {
 			"type": "stdio",
 			"command": "uvx",
 			"args": [

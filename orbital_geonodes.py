@@ -9,6 +9,7 @@ Organizes orbitals by quantum numbers:
 import bpy
 import math
 import orbital_vertices
+import os
 
 def clear_scene():
     """Remove all mesh objects from the scene."""
@@ -479,62 +480,72 @@ def main():
     print("ORBITAL VISUALIZATION SCRIPT STARTING")
     print("="*60)
     
-    # Clear existing scene
-    clear_scene()
-    print("✓ Scene cleared")
+    # Create frames directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    frames_dir = os.path.join(script_dir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    print(f"✓ Frames directory created: {frames_dir}")
     
-    # Create the base mesh with orbital points
-    max_n = 4  # Generate orbitals up to n=4
-    base_obj = create_base_mesh_with_points(max_n=max_n)
-    
-    if base_obj is None:
-        print("="*60)
-        print("✗ ERROR: Failed to create orbital mesh - no vertices generated!")
-        print("This usually means scipy/numpy is not installed in Blender's Python")
-        print("="*60)
-        return
-    
-    print(f"✓ Base mesh created: {base_obj.name} with {len(base_obj.data.vertices)} vertices")
-    
-    # Create instance object (sphere)
-    instance_obj = create_instance_sphere()
-    print(f"✓ Instance sphere created: {instance_obj.name}")
-    
-    # Hide the instance object from viewport and render
-    instance_obj.hide_viewport = True
-    instance_obj.hide_render = True
-    
-    # Set up geometry nodes
-    print("Setting up geometry nodes...")
-    setup_geometry_nodes(base_obj, instance_obj)
-    print("✓ Geometry nodes setup attempted")
-    
-    # If geometry nodes already exist from previous run, update the instance object reference
-    for mod in base_obj.modifiers:
-        if mod.type == 'NODES' and mod.node_group:
-            for node in mod.node_group.nodes:
-                if node.type == 'OBJECT_INFO':
-                    node.inputs['Object'].default_value = instance_obj
-                    print(f"✓ Updated Object Info reference in existing modifier: {mod.name}")
-    
-    # Add text labels
-    add_text_labels()
-    
-    # Set up camera and lighting
-    setup_camera_and_lighting()
-    
-    # Select the main orbital grid object
-    bpy.context.view_layer.objects.active = base_obj
-    base_obj.select_set(True)
+    # Loop for 64 iterations
+    for i in range(64):
+        print(f"\n--- ITERATION {i+1}/64 ---")
+        
+        # Clear existing scene
+        clear_scene()
+        print("✓ Scene cleared")
+        
+        # Create the base mesh with orbital points
+        max_n = 4  # Generate orbitals up to n=4
+        base_obj = create_base_mesh_with_points(max_n=max_n)
+        
+        if base_obj is None:
+            print("="*60)
+            print("✗ ERROR: Failed to create orbital mesh - no vertices generated!")
+            print("="*60)
+            continue
+        
+        print(f"✓ Base mesh created: {base_obj.name} with {len(base_obj.data.vertices)} vertices")
+        
+        # Create instance object (sphere)
+        instance_obj = create_instance_sphere()
+        print(f"✓ Instance sphere created: {instance_obj.name}")
+        
+        # Hide the instance object from viewport and render
+        instance_obj.hide_viewport = True
+        instance_obj.hide_render = True
+        
+        # Set up geometry nodes
+        print("Setting up geometry nodes...")
+        setup_geometry_nodes(base_obj, instance_obj)
+        print("✓ Geometry nodes setup attempted")
+        
+        # If geometry nodes already exist from previous run, update the instance object reference
+        for mod in base_obj.modifiers:
+            if mod.type == 'NODES' and mod.node_group:
+                for node in mod.node_group.nodes:
+                    if node.type == 'OBJECT_INFO':
+                        node.inputs['Object'].default_value = instance_obj
+                        print(f"✓ Updated Object Info reference in existing modifier: {mod.name}")
+        
+        # Add text labels
+        add_text_labels()
+        
+        # Set up camera and lighting
+        setup_camera_and_lighting()
+        
+        # Select the main orbital grid object
+        bpy.context.view_layer.objects.active = base_obj
+        base_obj.select_set(True)
+        
+        # Render viewport to PNG
+        frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
+        bpy.context.scene.render.filepath = frame_path
+        bpy.ops.render.opengl(write_still=True)
+        print(f"✓ Rendered frame {i+1}: {frame_path}")
     
     print("="*60)
-    print(f"✓ ORBITAL VISUALIZATION COMPLETE")
-    print(f"  Created n=1 to n={max_n}")
-    print("  X axis: Angular momentum (l) - 0=s, 1=p, 2=d, 3=f")
-    print("  Y axis: Magnetic quantum number (m)")
-    print("  Z axis: Principal quantum number (n)")
-    print(f"  Total vertices: {len(base_obj.data.vertices)}")
-    print(f"  Modifiers on {base_obj.name}: {[m.name for m in base_obj.modifiers]}")
+    print("✓ ORBITAL VISUALIZATION COMPLETE - 64 FRAMES GENERATED")
+    print(f"  Frames saved to: {frames_dir}")
     print("="*60)
 
 if __name__ == "__main__":
