@@ -8,6 +8,7 @@ Organizes orbitals by quantum numbers:
 
 import bpy
 import math
+import orbital_vertices
 
 def clear_scene():
     """Remove all mesh objects from the scene."""
@@ -49,9 +50,12 @@ def create_base_mesh_with_points(max_n=4):
             for m in range(0, l + 1):  # m goes from 0 to l (positive m only, symmetrical)
                 pos = create_orbital_point(n, l, m)
                 
-                # Create point cloud for this orbital
-                orbital_points, orbital_phases = create_orbital_cloud_mesh(n, l, m, pos, num_points=300)
-                all_vertices.extend(orbital_points)
+                # Generate vertices in local space using Rust
+                orbital_points, orbital_phases = orbital_vertices.generate_orbital_vertices(n, l, m, 300)
+                
+                # Transform to orbital position
+                transformed_points = [(x + pos[0], y + pos[1], z + pos[2]) for x, y, z in orbital_points]
+                all_vertices.extend(transformed_points)
                 phase_values.extend(orbital_phases)
                 
                 # Store quantum numbers for each point
@@ -63,7 +67,6 @@ def create_base_mesh_with_points(max_n=4):
     # Check if we have any vertices before proceeding
     if len(all_vertices) == 0:
         print("ERROR: No vertices generated!")
-        print("Check if scipy and numpy are installed in Blender's Python")
         return None
     
     print(f"Total points generated: {len(all_vertices)}")
@@ -130,79 +133,6 @@ def create_base_mesh_with_points(max_n=4):
         print(f"✓ Attributes assigned using loop")
     
     return obj
-
-def create_orbital_cloud_mesh(n, l, m, position, num_points=1048576):
-    """Create a point cloud mesh for a specific orbital."""
-    import numpy as np
-    from scipy.special import sph_harm
-    from scipy.special import assoc_laguerre
-    
-    points = []
-    phases = []
-    radius_scale = 0.5
-    
-    # Generate points using rejection sampling
-    attempts = 0
-    max_attempts = num_points * 512
-    
-    while len(points) < num_points and attempts < max_attempts:
-        attempts += 1
-        
-        # Sample radius with appropriate distribution
-        r = np.random.exponential(n * radius_scale)
-        if r > n * 3 * radius_scale:  # cutoff
-            continue
-            
-        theta = np.arccos(2 * np.random.random() - 1)
-        phi = 2 * np.pi * np.random.random()
-        
-        # Radial wave function
-        rho = 2 * r / (n * radius_scale)
-        if rho < 0.01:  # avoid singularity
-            continue
-            
-        try:
-            L = assoc_laguerre(rho, n - l - 1, 2 * l + 1)
-            R = np.exp(-rho / 2) * (rho ** l) * L
-            
-            # Angular wave function (complex valued)
-            Y = sph_harm(abs(m), l, phi, theta)
-            
-            # Probability density (normalized wave function squared)
-            prob = (R ** 2) * (abs(Y) ** 2) * (r ** 2)
-            
-            # Apply threshold to remove very faint outer regions
-            # Use a dynamic threshold based on n to keep lobes well-defined
-            threshold = 0.4 * (n ** 2)  # Scales with orbital size
-            
-            # Rejection sampling: accept based on probability
-            if prob > threshold and np.random.random() < min(prob * 2, 1.0):
-                x = r * np.sin(theta) * np.cos(phi) + position[0]
-                y = r * np.sin(theta) * np.sin(phi) + position[1]
-                z = r * np.cos(theta) + position[2]
-                points.append((x, y, z))
-                
-                # Calculate sign from wave function's real part
-                psi = R * Y
-                # Convert sign to unorm range: +1 -> 1.0, -1 -> 0.0
-                sign = 1.0 if psi.real >= 0 else -1.0
-                unorm_value = 0.5 * sign + 0.5
-                phases.append(float(unorm_value))
-        except:
-            continue
-    
-    # If we didn't get enough points, fill with simple sphere
-    while len(points) < num_points:
-        r = np.random.exponential(n * radius_scale)
-        theta = np.arccos(2 * np.random.random() - 1)
-        phi = 2 * np.pi * np.random.random()
-        x = r * np.sin(theta) * np.cos(phi) + position[0]
-        y = r * np.sin(theta) * np.sin(phi) + position[1]
-        z = r * np.cos(theta) + position[2]
-        points.append((x, y, z))
-        phases.append(0.5)  # default unorm value (neutral) for fill points
-    
-    return points[:num_points], phases[:num_points]
 
 def create_instance_sphere():
     """Create a tiny icosphere to be instanced at each point in the orbital cloud."""

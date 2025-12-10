@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "orbital-vertices"
+version = "0.1.0"
+description = "Generate electron orbital vertices in Rust"
+authors = [{name = "Richard Klassen"}]
+dependencies = []
+
+[tool.maturin]
+bindings = "pyo3"
