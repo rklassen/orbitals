@@ -16,7 +16,7 @@ def clear_scene():
     for obj in objects_to_remove:
         bpy.data.objects.remove(obj, do_unlink=True)
 
-def create_orbital_point(n, l, m, spacing=12.0):
+def create_orbital_point(n, l, m, spacing=16.0):
     """
     Create a point in 3D space for an orbital configuration.
     
@@ -131,7 +131,7 @@ def create_base_mesh_with_points(max_n=4):
     
     return obj
 
-def create_orbital_cloud_mesh(n, l, m, position, num_points=500):
+def create_orbital_cloud_mesh(n, l, m, position, num_points=1048576):
     """Create a point cloud mesh for a specific orbital."""
     import numpy as np
     from scipy.special import sph_harm
@@ -143,7 +143,7 @@ def create_orbital_cloud_mesh(n, l, m, position, num_points=500):
     
     # Generate points using rejection sampling
     attempts = 0
-    max_attempts = num_points * 50
+    max_attempts = num_points * 512
     
     while len(points) < num_points and attempts < max_attempts:
         attempts += 1
@@ -168,11 +168,15 @@ def create_orbital_cloud_mesh(n, l, m, position, num_points=500):
             # Angular wave function (complex valued)
             Y = sph_harm(abs(m), l, phi, theta)
             
-            # Probability density
+            # Probability density (normalized wave function squared)
             prob = (R ** 2) * (abs(Y) ** 2) * (r ** 2)
             
-            # Rejection sampling
-            if prob > 0 and np.random.random() < min(prob * 100, 1.0):
+            # Apply threshold to remove very faint outer regions
+            # Use a dynamic threshold based on n to keep lobes well-defined
+            threshold = 0.4 * (n ** 2)  # Scales with orbital size
+            
+            # Rejection sampling: accept based on probability
+            if prob > threshold and np.random.random() < min(prob * 2, 1.0):
                 x = r * np.sin(theta) * np.cos(phi) + position[0]
                 y = r * np.sin(theta) * np.sin(phi) + position[1]
                 z = r * np.cos(theta) + position[2]
@@ -524,9 +528,9 @@ def add_text_labels():
 def setup_camera_and_lighting():
     """Set up camera and lighting for the scene."""
     # Add camera
-    bpy.ops.object.camera_add(location=(15, -15, 12))
+    bpy.ops.object.camera_add(location=(6.903, 42.651, 25.842))
     camera = bpy.context.active_object
-    camera.rotation_euler = (math.radians(60), 0, math.radians(45))
+    camera.rotation_euler = (1.151, -0.0, -2.332)
     bpy.context.scene.camera = camera
     
     # Add sun light
