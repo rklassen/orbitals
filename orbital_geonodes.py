@@ -90,6 +90,9 @@ def create_base_mesh_with_points(max_n=4):
     bpy.context.collection.objects.link(obj)
     print(f"✓ Object created and linked: {obj.name}")
     
+    # Update scene before creating attributes
+    bpy.context.view_layer.update()
+    
     # NOW create attributes (they will initialize properly because object is in scene)
     print(f"Creating attributes for {len(mesh.vertices)} vertices")
     print(f"n_values: {len(n_values)}, l_values: {len(l_values)}, m_values: {len(m_values)}, phase_values: {len(phase_values)}")
@@ -102,7 +105,6 @@ def create_base_mesh_with_points(max_n=4):
     # Force update after creating attributes
     mesh.update()
     obj.update_from_editmode()
-    bpy.context.view_layer.update()
     
     print(f"✓ Attributes created and scene updated")
     print(f"  Attribute sizes: n={len(n_attr.data)}, l={len(l_attr.data)}, m={len(m_attr.data)}, wf_sign={len(wf_sign_attr.data)}")
@@ -464,6 +466,25 @@ def setup_camera_and_lighting():
     camera.rotation_euler = (1.151, -0.0, -2.332)
     bpy.context.scene.camera = camera
     
+    # Set the 3D view to look through the active camera
+    try:
+        # Try to set camera view in all 3D view areas
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            space.region_3d.view_perspective = 'CAMERA'
+                            break
+    except Exception as e:
+        print(f"Warning: Could not set view to camera: {e}")
+        # Continue anyway - render will still work
+    
+    # Set render resolution
+    bpy.context.scene.render.resolution_x = 1920
+    bpy.context.scene.render.resolution_y = 1080
+    bpy.context.scene.render.resolution_percentage = 100
+    
     # Add sun light
     bpy.ops.object.light_add(type='SUN', location=(10, 10, 10))
     sun = bpy.context.active_object
@@ -481,14 +502,20 @@ def main():
     print("="*60)
     
     # Create frames directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    frames_dir = os.path.join(script_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
-    print(f"✓ Frames directory created: {frames_dir}")
+    frames_dir = "/Users/richardklassen/Developer/orbitals/frames"
+    try:
+        os.makedirs(frames_dir, exist_ok=True)
+        print(f"✓ Frames directory created: {frames_dir}")
+        if os.path.exists(frames_dir):
+            print(f"✓ Directory confirmed: {frames_dir}")
+        else:
+            print(f"✗ Directory not created: {frames_dir}")
+    except Exception as e:
+        print(f"✗ Failed to create directory: {e}")
     
     # Loop for 64 iterations
-    for i in range(64):
-        print(f"\n--- ITERATION {i+1}/64 ---")
+    for i in range(2056):
+        print(f"\n--- ITERATION {i+1}/10 ---")
         
         # Clear existing scene
         clear_scene()
@@ -537,14 +564,26 @@ def main():
         bpy.context.view_layer.objects.active = base_obj
         base_obj.select_set(True)
         
+        # Update view layer
+        bpy.context.view_layer.update()
+        
         # Render viewport to PNG
         frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
-        bpy.context.scene.render.filepath = frame_path
-        bpy.ops.render.opengl(write_still=True)
-        print(f"✓ Rendered frame {i+1}: {frame_path}")
+        print(f"Attempting to render to: {frame_path}")
+        try:
+            bpy.context.scene.render.filepath = frame_path
+            bpy.ops.render.render(write_still=True)  # Use camera render instead of viewport
+            print(f"✓ Rendered frame {i+1}: {frame_path}")
+            # Check if file exists
+            if os.path.exists(frame_path):
+                print(f"✓ File confirmed: {frame_path}")
+            else:
+                print(f"✗ File not found after render: {frame_path}")
+        except Exception as e:
+            print(f"✗ Render failed for frame {i+1}: {e}")
     
     print("="*60)
-    print("✓ ORBITAL VISUALIZATION COMPLETE - 64 FRAMES GENERATED")
+    print("✓ ORBITAL VISUALIZATION COMPLETE - 10 FRAMES GENERATED")
     print(f"  Frames saved to: {frames_dir}")
     print("="*60)
 

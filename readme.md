@@ -11,7 +11,6 @@ Restart normally
 Run the copy commands
 Re-enable SIP by repeating steps 1-2 and running: csrutil enable
 
-
 cd /Applications/Blender.app/Contents/Resources/5.0/python/bin
 
 # Install to temp location first
