@@ -1,551 +1,591 @@
-import numpy as np
-import scipy.integrate as integrate
-from scipy.special import hermite
+"""
+Blender 5.0 script to create hydrogen orbital visualizations using Geometry Nodes.
+Organizes orbitals by quantum numbers:
+- X axis: angular momentum (l) - 0, 1, 2, 3... (s, p, d, f...)
+- Y axis: magnetic quantum number (m) - varies by l
+- Z axis: principal quantum number (n) - 1, 2, 3...
+"""
+
+import bpy
 import math
-from matplotlib import pyplot as plt
-from matplotlib import animation
-from mpl_toolkits.mplot3d import Axes3D
-import random as rand
-import itertools
+import orbital_vertices
+import os
 
-# ===== WAVEFORM/CURVE CONSTANTS =====
+def clear_scene():
+    """Remove all mesh objects from the scene."""
+    # Use direct removal instead of operators to handle unselectable objects
+    objects_to_remove = [obj for obj in bpy.data.objects]
+    for obj in objects_to_remove:
+        bpy.data.objects.remove(obj, do_unlink=True)
 
-# Quantum system parameters
-HILBERT_DIM = 4  # Increased to 4 basis states for more complexity
+def create_orbital_point(n, l, m, spacing=16.0):
+    """
+    Create a point in 3D space for an orbital configuration.
+    
+    Args:
+        n: principal quantum number (1, 2, 3...)
+        l: angular momentum quantum number (0 to n-1)
+        m: magnetic quantum number (-l to +l)
+        spacing: distance between orbitals
+    """
+    x = l * spacing
+    y = m * spacing
+    z = (4 - n) * spacing
+    return (x, y, z)
 
-# Wave function parameters
-WAVE_COEFFICIENTS = [0.4+0.2j, 0.3-0.4j, 0.2+0.3j, 0.1-0.1j]  # Complex coefficients for richer interference patterns
+def create_base_mesh_with_points(max_n=4):
+    """
+    Create point clouds for all orbital configurations.
+    
+    Args:
+        max_n: maximum principal quantum number to generate
+    """
+    all_vertices = []
+    n_values = []
+    l_values = []
+    m_values = []
+    phase_values = []
+    
+    for n in range(1, max_n + 1):
+        for l in range(0, n):  # l goes from 0 to n-1
+            for m in range(0, l + 1):  # m goes from 0 to l (positive m only, symmetrical)
+                pos = create_orbital_point(n, l, m)
+                
+                # Generate vertices in local space using Rust
+                orbital_points, orbital_phases = orbital_vertices.generate_orbital_vertices(n, l, m, 300)
+                
+                # Transform to orbital position
+                transformed_points = [(x + pos[0], y + pos[1], z + pos[2]) for x, y, z in orbital_points]
+                all_vertices.extend(transformed_points)
+                phase_values.extend(orbital_phases)
+                
+                # Store quantum numbers for each point
+                for _ in orbital_points:
+                    n_values.append(n)
+                    l_values.append(l)
+                    m_values.append(m)
+    
+    # Check if we have any vertices before proceeding
+    if len(all_vertices) == 0:
+        print("ERROR: No vertices generated!")
+        return None
+    
+    print(f"Total points generated: {len(all_vertices)}")
+    
+    # Create mesh and object
+    mesh = bpy.data.meshes.new("OrbitalClouds")
+    mesh.from_pydata(all_vertices, [], [])
+    mesh.update()
+    
+    # Verify mesh has vertices
+    if len(mesh.vertices) == 0:
+        print(f"ERROR: Mesh has no vertices even though all_vertices had {len(all_vertices)} points!")
+        print("This shouldn't happen - mesh.from_pydata failed")
+        return None
+    
+    print(f"Mesh created successfully with {len(mesh.vertices)} vertices")
+    
+    # Create and link object FIRST - attributes need the object in the scene to initialize
+    obj = bpy.data.objects.new("OrbitalGrid", mesh)
+    bpy.context.collection.objects.link(obj)
+    print(f"✓ Object created and linked: {obj.name}")
+    
+    # Update scene before creating attributes
+    bpy.context.view_layer.update()
+    
+    # NOW create attributes (they will initialize properly because object is in scene)
+    print(f"Creating attributes for {len(mesh.vertices)} vertices")
+    print(f"n_values: {len(n_values)}, l_values: {len(l_values)}, m_values: {len(m_values)}, phase_values: {len(phase_values)}")
+    
+    n_attr = mesh.attributes.new(name="n", type='FLOAT', domain='POINT')
+    l_attr = mesh.attributes.new(name="l", type='FLOAT', domain='POINT')
+    m_attr = mesh.attributes.new(name="m", type='FLOAT', domain='POINT')
+    wf_sign_attr = mesh.attributes.new(name="wf_sign", type='FLOAT', domain='POINT')
+    
+    # Force update after creating attributes
+    mesh.update()
+    obj.update_from_editmode()
+    
+    print(f"✓ Attributes created and scene updated")
+    print(f"  Attribute sizes: n={len(n_attr.data)}, l={len(l_attr.data)}, m={len(m_attr.data)}, wf_sign={len(wf_sign_attr.data)}")
+    print(f"  Value list sizes: n={len(n_values)}, l={len(l_values)}, m={len(m_values)}, phase={len(phase_values)}")
+    
+    # If attributes still have size 0, try reacquiring them
+    if len(n_attr.data) == 0:
+        print("  Attributes have size 0, reacquiring from mesh...")
+        n_attr = mesh.attributes.get("n")
+        l_attr = mesh.attributes.get("l")
+        m_attr = mesh.attributes.get("m")
+        wf_sign_attr = mesh.attributes.get("wf_sign")
+        print(f"  After reacquiring: n={len(n_attr.data)}, l={len(l_attr.data)}, m={len(m_attr.data)}, wf_sign={len(wf_sign_attr.data)}")
+    
+    # Use foreach_set for efficient bulk assignment
+    try:
+        n_attr.data.foreach_set("value", n_values)
+        l_attr.data.foreach_set("value", l_values)
+        m_attr.data.foreach_set("value", m_values)
+        wf_sign_attr.data.foreach_set("value", phase_values)
+        print(f"✓ Attributes assigned using foreach_set")
+    except Exception as e:
+        print(f"foreach_set failed, using loop: {e}")
+        for idx, (n, l, m, sign) in enumerate(zip(n_values, l_values, m_values, phase_values)):
+            n_attr.data[idx].value = n
+            l_attr.data[idx].value = l
+            m_attr.data[idx].value = m
+            wf_sign_attr.data[idx].value = sign
+        print(f"✓ Attributes assigned using loop")
+    
+    return obj
 
-# Animation parameters
-ANIMATION_FRAMES = 3600  # Total number of animation frames
-TIME_FACTOR = 0.8        # Time evolution speed multiplier (slower for complex patterns)
-SAMPLING_POINTS = 120    # Number of spatial sampling points (higher resolution)
+def create_instance_sphere():
+    """Create a tiny icosphere to be instanced at each point in the orbital cloud."""
+    # Calculate radius for 1.618x volume: r_new = r_old * (1.618)^(1/3)
+    radius = 0.03 * (1.618 ** (1/3))  # ~0.0352
+    bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1, radius=radius, location=(0, 0, 0))
+    sphere = bpy.context.active_object
+    sphere.name = "OrbitalParticle"
+    
+    # Add material with phase-based color emission
+    # Remove existing material if it exists to ensure we get the updated version
+    if "OrbitalMaterial" in bpy.data.materials:
+        bpy.data.materials.remove(bpy.data.materials["OrbitalMaterial"])
+    
+    mat = bpy.data.materials.new(name="OrbitalMaterial")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+    
+    # Output node
+    output = nodes.new(type='ShaderNodeOutputMaterial')
+    output.location = (400, 0)
+    
+    # Emission shader
+    emission = nodes.new(type='ShaderNodeEmission')
+    emission.location = (200, 0)
+    emission.inputs['Strength'].default_value = 3.0
+    
+    # Named Attribute node for phase
+    phase_attr = nodes.new(type='ShaderNodeAttribute')
+    phase_attr.location = (-400, 0)
+    phase_attr.attribute_name = "wf_sign"
+    
+    # Greater Than comparison - true (1) if phase > 0.5, false (0) otherwise
+    # Since phase is now in unorm range [0, 1], compare to 0.5 to distinguish positive/negative
+    greater_than = nodes.new(type='ShaderNodeMath')
+    greater_than.location = (-200, 0)
+    greater_than.operation = 'GREATER_THAN'
+    greater_than.inputs[1].default_value = 0.5  # threshold
+    
+    # Mint color (RGB: 152/255, 255/255, 152/255)
+    mint_color = nodes.new(type='ShaderNodeRGB')
+    mint_color.location = (-200, -200)
+    mint_color.outputs['Color'].default_value = (0.596, 1.0, 0.596, 1.0)
+    
+    # Magenta color (RGB: 255/255, 0/255, 255/255)
+    magenta_color = nodes.new(type='ShaderNodeRGB')
+    magenta_color.location = (-200, -350)
+    magenta_color.outputs['Color'].default_value = (1.0, 0.0, 1.0, 1.0)
+    
+    # Mix colors based on phase
+    mix_color = nodes.new(type='ShaderNodeMix')
+    mix_color.location = (0, 0)
+    mix_color.data_type = 'RGBA'
+    
+    # Link nodes
+    links.new(phase_attr.outputs['Fac'], greater_than.inputs[0])
+    links.new(greater_than.outputs['Value'], mix_color.inputs['Factor'])
+    links.new(mint_color.outputs['Color'], mix_color.inputs[6])  # A
+    links.new(magenta_color.outputs['Color'], mix_color.inputs[7])  # B
+    links.new(mix_color.outputs[2], emission.inputs['Color'])
+    links.new(emission.outputs['Emission'], output.inputs['Surface'])
+    
+    sphere.data.materials.append(mat)
+    
+    return sphere
 
-# Physical potential
-POTENTIAL_FUNCTION = lambda x: 1/2*x**2  # Harmonic oscillator: V(x) = (1/2)x²
-
-# Visualization limits
-AXIS_X_LIMITS = (-6, 6)    # Position axis range (expanded for more complex patterns)
-AXIS_Y_LIMITS = (-2, 2)    # Imaginary part axis range (expanded for higher amplitudes)
-AXIS_Z_LIMITS = (-2, 2)    # Real part axis range (expanded for higher amplitudes)
-
-# Trail effect parameters
-TRAIL_COUNT = 16           # Number of trail copies
-TRAIL_OFFSET_STEP = 32     # Frame offset between trails
-TRAIL_FADE_BASE = TRAIL_COUNT + 1  # Base for alpha calculation (ensures proper fading)
-
-# Color parameters for trail fading
-TRAIL_BACKGROUND_COLOR = 30  # RGB value for faded trail background (0-255)
-ORIGINAL_BLUE_VALUE = 255    # Original blue channel value
-ORIGINAL_GREEN_VALUE = 255   # Original green channel value
-
-# Camera parameters
-CAMERA_ELEVATION = 30     # Camera elevation angle (degrees)
-CAMERA_AZIMUTH = -60      # Camera azimuth angle (degrees)
-
-# Animation timing
-ANIMATION_INTERVAL = 10   # Milliseconds between frames
-TIME_SCALING_FACTOR = 100  # Divisor for time scaling in animation
-
-# Simple numerical derivative function to replace scipy.misc.derivative
-def derivative(func, x, dx=1e-6, n=1):
-    """Numerical derivative using finite differences"""
-    if n == 1:
-        return (func(x + dx) - func(x - dx)) / (2 * dx)
-    elif n == 2:
-        return (func(x + dx) - 2*func(x) + func(x - dx)) / (dx**2)
+def setup_geometry_nodes(base_obj, instance_obj):
+    """
+    Set up geometry nodes for instancing on points.
+    
+    Args:
+        base_obj: the object with points (orbital positions)
+        instance_obj: the object to instance at each point
+    """
+    print(f"Setting up geometry nodes...")
+    print(f"  Base object: {base_obj.name}")
+    print(f"  Instance object: {instance_obj.name}")
+    
+    # Clear all materials from the file
+    for mat in list(bpy.data.materials):
+        bpy.data.materials.remove(mat)
+    print("  ✓ Cleared all materials")
+    
+    # Create new material with magenta/mint emission
+    mat = bpy.data.materials.new(name="OrbitalMaterial")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+    
+    # Output node
+    output = nodes.new(type='ShaderNodeOutputMaterial')
+    output.location = (400, 0)
+    
+    # Emission shader
+    emission = nodes.new(type='ShaderNodeEmission')
+    emission.location = (200, 0)
+    emission.inputs['Strength'].default_value = 3.0
+    
+    # Named Attribute node for wave function sign
+    sign_attr = nodes.new(type='ShaderNodeAttribute')
+    sign_attr.location = (-400, 0)
+    sign_attr.attribute_name = "wf_sign"
+    sign_attr.attribute_type = 'INSTANCER'  # Read from instance data, not geometry
+    
+    # Greater Than comparison (wf_sign > 0.5)
+    # wf_sign is in unorm range [0, 1], so > 0.5 means positive
+    greater_than = nodes.new(type='ShaderNodeMath')
+    greater_than.location = (-200, 0)
+    greater_than.operation = 'GREATER_THAN'
+    greater_than.inputs[1].default_value = 0.5
+    
+    # Magenta color (for negative, wf_sign <= 0.5)
+    magenta = nodes.new(type='ShaderNodeRGB')
+    magenta.location = (-200, -200)
+    magenta.outputs['Color'].default_value = (1.0, 0.0, 1.0, 1.0)
+    
+    # Mint color (for positive, wf_sign > 0.5) - #00FFB3
+    mint = nodes.new(type='ShaderNodeRGB')
+    mint.location = (-200, -350)
+    mint.outputs['Color'].default_value = (0.0, 1.0, 0.702, 1.0)
+    
+    # Mix colors
+    mix_color = nodes.new(type='ShaderNodeMix')
+    mix_color.location = (0, 0)
+    mix_color.data_type = 'RGBA'
+    
+    # Link material nodes
+    links.new(sign_attr.outputs['Fac'], greater_than.inputs[0])
+    links.new(greater_than.outputs['Value'], mix_color.inputs['Factor'])
+    links.new(magenta.outputs['Color'], mix_color.inputs[6])
+    links.new(mint.outputs['Color'], mix_color.inputs[7])
+    links.new(mix_color.outputs[2], emission.inputs['Color'])
+    links.new(emission.outputs['Emission'], output.inputs['Surface'])
+    
+    # Apply material to instance object
+    if len(instance_obj.data.materials) == 0:
+        instance_obj.data.materials.append(mat)
     else:
-        raise ValueError("Only n=1 and n=2 supported")
+        instance_obj.data.materials[0] = mat
+    print("  ✓ Created and applied OrbitalMaterial")
+    
+    # Assign material to base object so geometry nodes can use it
+    base_obj.data.materials.clear()
+    base_obj.data.materials.append(mat)
+    print(f"  ✓ Assigned {mat.name} to {base_obj.name}")
+    
+    # Add geometry nodes modifier
+    modifier = base_obj.modifiers.new(name="OrbitalInstances", type='NODES')
+    print(f"  Created modifier: {modifier.name}")
+    
+    # Create new node tree with unique name
+    import time
+    node_tree_name = f"OrbitalGeometry_{int(time.time())}"
+    node_tree = bpy.data.node_groups.new(name=node_tree_name, type='GeometryNodeTree')
+    print(f"  Created node group: {node_tree.name}")
+    modifier.node_group = node_tree
+    
+    # Create nodes
+    nodes = node_tree.nodes
+    links = node_tree.links
+    
+    # Input and Output nodes
+    input_node = nodes.new(type='NodeGroupInput')
+    output_node = nodes.new(type='NodeGroupOutput')
+    input_node.location = (-600, 0)
+    output_node.location = (600, 0)
+    
+    # Create input and output sockets
+    node_tree.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+    node_tree.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+    
+    # Mesh to Points node
+    mesh_to_points = nodes.new(type='GeometryNodeMeshToPoints')
+    mesh_to_points.location = (-400, 0)
+    mesh_to_points.inputs['Radius'].default_value = 0.02
+    
+    # Instance on Points node
+    instance_on_points = nodes.new(type='GeometryNodeInstanceOnPoints')
+    instance_on_points.location = (-200, 0)
+    
+    # Object Info node for the instance object
+    object_info = nodes.new(type='GeometryNodeObjectInfo')
+    object_info.location = (-400, -200)
+    object_info.inputs['Object'].default_value = instance_obj
+    object_info.transform_space = 'RELATIVE'
+    
+    # Named Attribute nodes for quantum numbers
+    n_attribute = nodes.new(type='GeometryNodeInputNamedAttribute')
+    n_attribute.location = (-400, -350)
+    n_attribute.inputs['Name'].default_value = "n"
+    n_attribute.data_type = 'INT'
+    
+    l_attribute = nodes.new(type='GeometryNodeInputNamedAttribute')
+    l_attribute.location = (-400, -500)
+    l_attribute.inputs['Name'].default_value = "l"
+    l_attribute.data_type = 'INT'
+    
+    # Map Range for scaling based on n
+    scale_map = nodes.new(type='ShaderNodeMapRange')
+    scale_map.location = (-200, -350)
+    scale_map.inputs['From Min'].default_value = 1.0
+    scale_map.inputs['From Max'].default_value = 4.0
+    scale_map.inputs['To Min'].default_value = 0.5
+    scale_map.inputs['To Max'].default_value = 1.5
+    
+    # Mix RGB node for color variation based on l
+    # Create color for low l (blue)
+    color_low = nodes.new(type='FunctionNodeCombineColor')
+    color_low.location = (-200, -600)
+    color_low.inputs['Red'].default_value = 0.1
+    color_low.inputs['Green'].default_value = 0.3
+    color_low.inputs['Blue'].default_value = 1.0
+    
+    # Create color for high l (red)
+    color_high = nodes.new(type='FunctionNodeCombineColor')
+    color_high.location = (-200, -750)
+    color_high.inputs['Red'].default_value = 1.0
+    color_high.inputs['Green'].default_value = 0.3
+    color_high.inputs['Blue'].default_value = 0.1
+    
+    # Mix colors based on l
+    color_mix = nodes.new(type='ShaderNodeMix')
+    color_mix.location = (0, -600)
+    color_mix.data_type = 'RGBA'
+    color_mix.blend_type = 'MIX'
+    
+    # Map Range to normalize l for color mixing
+    normalize_l = nodes.new(type='ShaderNodeMapRange')
+    normalize_l.location = (-200, -500)
+    normalize_l.inputs['From Min'].default_value = 0.0
+    normalize_l.inputs['From Max'].default_value = 3.0
+    normalize_l.inputs['To Min'].default_value = 0.0
+    normalize_l.inputs['To Max'].default_value = 1.0
+    
+    # Capture Attribute node to transfer wf_sign from points to instances
+    capture_wf_sign = nodes.new(type='GeometryNodeCaptureAttribute')
+    capture_wf_sign.location = (-250, -150)
+    capture_wf_sign.domain = 'POINT'
+    # Add capture item for wf_sign (creates input/output sockets)
+    capture_item = capture_wf_sign.capture_items.new('FLOAT', 'wf_sign')
+    
+    # Named Attribute node to read wf_sign from base mesh points
+    wf_sign_input = nodes.new(type='GeometryNodeInputNamedAttribute')
+    wf_sign_input.location = (-450, -200)
+    wf_sign_input.inputs['Name'].default_value = "wf_sign"
+    wf_sign_input.data_type = 'FLOAT'
+    
+    # Store the captured wf_sign on the instances
+    store_wf_sign = nodes.new(type='GeometryNodeStoreNamedAttribute')
+    store_wf_sign.location = (0, 0)
+    store_wf_sign.inputs['Name'].default_value = "wf_sign"
+    store_wf_sign.data_type = 'FLOAT'
+    store_wf_sign.domain = 'INSTANCE'
+    
+    # Set Material node - use the material we just created
+    set_material = nodes.new(type='GeometryNodeSetMaterial')
+    set_material.location = (400, 0)
+    set_material.inputs['Material'].default_value = mat
+    print(f"  ✓ Set Material node configured with {mat.name}")
+    
+    # Store Named Attribute node for color
+    store_color = nodes.new(type='GeometryNodeStoreNamedAttribute')
+    store_color.location = (200, 0)
+    store_color.inputs['Name'].default_value = "orbital_color"
+    store_color.data_type = 'FLOAT_COLOR'
+    
+    # Link nodes
+    links.new(input_node.outputs['Geometry'], mesh_to_points.inputs['Mesh'])
+    # Note: mesh_to_points connects to capture_wf_sign, then to instance_on_points (see below)
+    links.new(object_info.outputs['Geometry'], instance_on_points.inputs['Instance'])
+    
+    # Link quantum number attributes
+    links.new(n_attribute.outputs['Attribute'], scale_map.inputs['Value'])
+    links.new(scale_map.outputs['Result'], instance_on_points.inputs['Scale'])
+    
+    # Link color mixing
+    links.new(l_attribute.outputs['Attribute'], normalize_l.inputs['Value'])
+    links.new(normalize_l.outputs['Result'], color_mix.inputs['Factor'])
+    links.new(color_low.outputs['Color'], color_mix.inputs[6])  # A input
+    links.new(color_high.outputs['Color'], color_mix.inputs[7])  # B input
+    
+    # Capture wf_sign from points and transfer to instances
+    links.new(mesh_to_points.outputs['Points'], capture_wf_sign.inputs['Geometry'])
+    links.new(wf_sign_input.outputs['Attribute'], capture_wf_sign.inputs['wf_sign'])
+    
+    # Use captured points for instancing (this preserves the attribute value per instance)
+    links.new(capture_wf_sign.outputs['Geometry'], instance_on_points.inputs['Points'])
+    
+    # Store the captured wf_sign attribute on the instances
+    links.new(instance_on_points.outputs['Instances'], store_wf_sign.inputs['Geometry'])
+    links.new(capture_wf_sign.outputs['wf_sign'], store_wf_sign.inputs['Value'])
+    
+    # Link color to store attribute
+    links.new(store_wf_sign.outputs['Geometry'], store_color.inputs['Geometry'])
+    links.new(color_mix.outputs[2], store_color.inputs['Value'])  # Result output
+    
+    # Link to material and output
+    links.new(store_color.outputs['Geometry'], set_material.inputs['Geometry'])
+    links.new(set_material.outputs['Geometry'], output_node.inputs['Geometry'])
+    
+    print(f"✓ Geometry nodes setup complete")
+    print(f"  Modifier: {modifier.name}")
+    print(f"  Instance object reference: {instance_obj.name}")
 
-# Quantum mechanics simulator for (initially) finite dimensional
-# approximations of Hilbert spaces provided a basis.
+def add_text_labels():
+    """Add text labels for axis identification."""
+    label_data = [
+        ("X: Angular Momentum (l)", (6, -2, 0), "Label X"),
+        ("Y: Magnetic Number (m)", (0, 6, 0), "Label Y"),
+        ("Z: Principal Number (n)", (0, 0, 10), "Label Z")
+    ]
+    
+    for text, location, name in label_data:
+        bpy.ops.object.text_add(location=location)
+        text_obj = bpy.context.active_object
+        text_obj.name = name
+        text_obj.data.body = text
+        text_obj.scale = (0.5, 0.5, 0.5)
 
-'''
-Code plan and structure:
+def setup_camera_and_lighting():
+    """Set up camera and lighting for the scene."""
+    # Add camera
+    bpy.ops.object.camera_add(location=(6.903, 42.651, 25.842))
+    camera = bpy.context.active_object
+    camera.rotation_euler = (1.151, -0.0, -2.332)
+    bpy.context.scene.camera = camera
+    
+    # Set the 3D view to look through the active camera
+    try:
+        # Try to set camera view in all 3D view areas
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            space.region_3d.view_perspective = 'CAMERA'
+                            break
+    except Exception as e:
+        print(f"Warning: Could not set view to camera: {e}")
+        # Continue anyway - render will still work
+    
+    # Set render resolution
+    bpy.context.scene.render.resolution_x = 1920
+    bpy.context.scene.render.resolution_y = 1080
+    bpy.context.scene.render.resolution_percentage = 100
+    
+    # Add sun light
+    bpy.ops.object.light_add(type='SUN', location=(10, 10, 10))
+    sun = bpy.context.active_object
+    sun.data.energy = 2.0
+    
+    # Add area light for fill
+    bpy.ops.object.light_add(type='AREA', location=(-10, -10, 5))
+    area = bpy.context.active_object
+    area.data.energy = 500
 
-One-dimensional:
-1. Given an arbitrary Hamiltonian H, find the eigenvalues E_n.
-2. Estimate the matrix form of the Hamiltonian in a finite-dimensional 
-   approximation in the QHO basis.
-  a. Determine the numerical solutions to the differential equations H.psi = E_n.psi.
-     (Call it numSolution[n])
-  b. Perform functional optimization over the parameter space by finding the set
-     of coefficients, [c_0, c_1, ..., c_n] such that the value
-     
-     QHOBasisApprox = numSolution[n](x) - sum([c[n] * hilbert.eigenbasis(n, x)
-     for n in range(hilbert.dim)])
-
-     assumes its minimum value.
-  c. Take the basis approximation and form an approximation of the Hamiltonian,
-
-     H = np.empty(2*[len(numSolution])
-     for i, j in itertools.product(range(hilbert.dim), range(hilbert.dim)):
-         H[i][j] = lambda x: np.conj(QHOBasisApprox[i](x)) * QHOBasisApprox[j](x)
-  d. Set the unitary time operator to be
-
-     U = lambda x, t: np.exp(-i/hbar * H(x) * t)
-  e. Evolve the wave function to be
-     psi = U(x, t) * initWaveFunc
-
-
-Three-dimensional:
-'''
-
-class FunctionSampler:
-    # Secret occult tricks to make computing our basis functions cheap.
-
-    def __init__(
-        self,
-        f,
-        minX,
-        maxX,
-        numSamples,
-    ):
-        self.minX = minX
-        self.maxX = maxX
-        self.range = maxX - minX
-        self.numSamples = numSamples
-        
-        self.domain = np.linspace(
-            minX,
-            maxX,
-            numSamples,
-        )
-        self.image = [
-            f(x)
-            for x in self.domain
-        ]
-
-    def __call__(self, x):
-        x = min(
-            max(
-                x,
-                self.minX,
-            ),
-            self.maxX - 1
-        )
-        x -= self.minX
-        x = round(
-            x * (self.numSamples / self.range)
-        )
-
-        return self.image[int(x)]
-
-class HilbertSpace:
-
-    def __init__(
-        self,
-        dim,
-        basis = 'QHO',
-        hamiltonianPotential = lambda x: x**4,
-        approxMethod = 'QHO',
-    ):
-        self.dim = dim
-
-        if hamiltonianPotential != None:
-            self.V = hamiltonianPotential
-
-        if basis == 'QHO' or approxMethod == 'QHO':
-            self.QHOBasis = lambda n, x: (
-                1/np.sqrt(
-                    2**n * math.factorial(n)
-                ) * np.pi**(1/4)) * np.exp(-x**2/2) * hermite(n)(x)
-            QHOBasisApprox = []
-            for n in range(self.dim):
-                QHOBasisApprox.append(
-                    FunctionSampler(
-                        lambda x: self.QHOBasis(n,x),
-                        -15,
-                        15,
-                        2000,
-                    )
-                )
-
-            self.QHOBasis = lambda n, x: QHOBasisApprox[n](x)
-
-        elif basis == 'Square Well' or approxMethod == 'Square Well':
-            self.SWBasis = lambda n, x: (
-                np.sqrt(2)
-                * np.sin(
-                    (n + 1)
-                    * np.pi
-                    * (x + 1 / 2)
-                )
-                if abs(x) < 1 / 2
-                else 0
-            )
-
-        if approxMethod == 'QHO':
-            self.H = np.empty(
-                [
-                    self.dim,
-                    self.dim,
-                ]
-            )
-            for i, j in itertools.product(
-                range(self.dim),
-                range(self.dim),
-            ):
-                HFunc = lambda x: np.conj(
-                    self.QHOBasis(i, x)
-                ) * (
-                    -1/2 * derivative(
-                        lambda xPrime: self.QHOBasis(
-                            j,
-                            xPrime,
-                        ),
-                        x,
-                        dx=1e-6,
-                        n=2
-                    )
-                    + self.V(x) * self.QHOBasis(j,x)
-                )
-                self.H[i][j] = integrate.quad(HFunc, -np.inf, np.inf)[0]
-                
-        if basis == 'QHO':
-            self.eigenbasis = self.QHOBasis
-            self.eigenvalues = lambda n: 1/2 + n
-            
-        elif basis == 'Square Well':
-            self.eigenbasis = self.SWBasis
-            self.eigenvalues = lambda n: (n+1)**2 * np.pi**2
-            
-class WaveFunction:
-
-    def __init__(
-        self,
-        hilbertSpace,
-        initWaveFunc = None,
-        coeff = None,
-    ):
-        self.hilbert = hilbertSpace
-
-        if coeff != None:
-            self.coeff = coeff
-                
+def main():
+    """Main function to create the orbital visualization."""
+    print("="*60)
+    print("ORBITAL VISUALIZATION SCRIPT STARTING")
+    print("="*60)
+    
+    # Create frames directory
+    frames_dir = "/Users/richardklassen/Developer/orbitals/frames"
+    try:
+        os.makedirs(frames_dir, exist_ok=True)
+        print(f"✓ Frames directory created: {frames_dir}")
+        if os.path.exists(frames_dir):
+            print(f"✓ Directory confirmed: {frames_dir}")
         else:
-            self.evaluate = lambda x: initWaveFunc(x)
-            self.coeff = self.orthogonalBasisProjection(initWaveFunc)
-
-        evaluate = lambda x, t: sum(
-            [
-                self.coeff[n] * self.hilbert.eigenbasis(n, x) * self.phaseFactor(n, t)
-                for n in range(self.hilbert.dim)
-            ]
-        )
-        normF = self.normalize(lambda x: evaluate(x, 0))
+            print(f"✗ Directory not created: {frames_dir}")
+    except Exception as e:
+        print(f"✗ Failed to create directory: {e}")
+    
+    # Loop for 64 iterations
+    for i in range(2056):
+        print(f"\n--- ITERATION {i+1}/10 ---")
         
-        self.evaluate = lambda x, t: evaluate(x, t) / normF
+        # Clear existing scene
+        clear_scene()
+        print("✓ Scene cleared")
         
-    def phaseFactor(self, n, t):
-        return np.exp(-1j * self.hilbert.eigenvalues(n) * t)
-
-    def normalize(self, waveFunc):
-        return np.sqrt(integrate.quad(
-            lambda x: np.absolute(
-                waveFunc(x)
-            )**2,
-            -np.inf,
-            np.inf,
-        )[0])
-
-    def orthogonalBasisProjection(self, waveFunc):
-        coeff = []
-        for n in range(hs.dim):
-            coeff.append(
-                integrate.quad(
-                    lambda x: np.conj(
-                        self.hilbert.eigenbasis(n, x)
-                    ) * waveFunc(x),
-                    -np.inf,
-                    np.inf,
-                )[0])
-
-        return coeff
-
-class Plotter:
-
-    def __init__(self):
-        pass
-
-    def plotWaveFunction2d(
-        self,
-        waveFunction,
-        samples = 50,
-        frames = 3600,
-        timeFactor = 1.0/32.0,
-        saveName = None,
-    ):
-
-        fig = plt.figure()
-        ax1 = plt.axes(xlim=(-5, 5), ylim=(-1,1))
-        line, = ax1.plot([], [], lw=2)
-        plt.xlabel('$x$')
-        plt.ylabel(r'$\psi(x)$')
-        plt.xticks([],[])
-        plt.yticks([],[])
-
-        plotlays, plotcols = [2], ["blue","red","green"]
-        lines = []
-        for index in range(3):
-            lobj = ax1.plot(
-                [],
-                [],
-                lw=2,
-                color=plotcols[index]
-            )[0]
-            lines.append(lobj)
-
-        def init():
-            for line in lines:
-                line.set_data([], [])
-            return lines
-
-        def animate(i):
-            posValues = np.linspace(-5, 5,samples)
-            amplitudeValues = [
-                waveFunction.evaluate(
-                    x,
-                    timeFactor * i/50
-                )
-                for x in posValues
-            ]
-
-            reValues = np.real(amplitudeValues)
-            imValues = np.imag(amplitudeValues)
-            probValues = np.absolute(amplitudeValues)**2
-
-            ylist = [reValues, imValues, probValues]
-
-            for lnum, line in enumerate(lines):
-                line.set_data(posValues, ylist[lnum])
-                
-            return lines
-
-        anim = animation.FuncAnimation(
-            fig,
-            animate,
-            init_func = init,
-            frames = frames,
-            interval = 10,
-            blit = True,
-        )
-
-        if saveName != None:
-            anim.save(
-                saveName + '.mp4',
-                fps = 30,
-                extra_args = ['-vcodec', 'libx264'],
-            )
-
-        plt.show()
-
-    def plotWaveFunction3d(
-        self,
-        waveFunction,
-        samples=SAMPLING_POINTS,
-        frames=ANIMATION_FRAMES,
-        timeFactor=TIME_FACTOR,
-        saveName=None,
-    ):
-
-        fig = plt.figure()
-        ax1 = fig.add_axes([0,0,1,1], projection='3d', proj_type='persp')
-        ax1.set_xlabel('$x$')
-        ax1.set_ylabel(r'Im$(\psi)$')
-        ax1.set_zlabel(r'Re$(\psi)$')
+        # Create the base mesh with orbital points
+        max_n = 4  # Generate orbitals up to n=4
+        base_obj = create_base_mesh_with_points(max_n=max_n)
         
-        ax1.set_xlim(AXIS_X_LIMITS)
-        ax1.set_ylim(AXIS_Y_LIMITS)
-        ax1.set_zlim(AXIS_Z_LIMITS)
-
-        ax1.set_xticks([])
-        ax1.set_yticks([])
-        ax1.set_zticks([])
-
-        plotlays, plotcols = [2], ["blue","red","green"]
+        if base_obj is None:
+            print("="*60)
+            print("✗ ERROR: Failed to create orbital mesh - no vertices generated!")
+            print("="*60)
+            continue
         
-        lines = []
-        pts = []
+        print(f"✓ Base mesh created: {base_obj.name} with {len(base_obj.data.vertices)} vertices")
         
-        # Create main curves (current state) - only blue curve
-        for index in [0]:  # Removed green curve (index 2)
-            lobj = ax1.plot([],[], [],lw=2,color=plotcols[index])[0]
-            pobj = ax1.plot([],[], [],lw=2,color=plotcols[index])[0]
-            lines.append(lobj)
-            pts.append(pobj)
+        # Create instance object (sphere)
+        instance_obj = create_instance_sphere()
+        print(f"✓ Instance sphere created: {instance_obj.name}")
         
-        # Create trail curves (past states) - only for blue curve
-        trail_lines = []
-        for trail_idx in range(TRAIL_COUNT):
-            alpha = 1.0 - (trail_idx + 1) / TRAIL_FADE_BASE
-            for index in [0]:  # Only blue curve trails
-                # Interpolate color from original to background
-                if index == 0:  # blue to dark
-                    r = int(0 * (1-alpha) + TRAIL_BACKGROUND_COLOR * alpha)
-                    g = int(0 * (1-alpha) + TRAIL_BACKGROUND_COLOR * alpha) 
-                    b = int(ORIGINAL_BLUE_VALUE * (1-alpha) + TRAIL_BACKGROUND_COLOR * alpha)
-                # Removed green curve trail logic
-                
-                color = f'#{r:02x}{g:02x}{b:02x}'
-                lobj = ax1.plot([],[], [],lw=1.5,color=color,alpha=alpha*0.8)[0]
-                trail_lines.append(lobj)
+        # Hide the instance object from viewport and render
+        instance_obj.hide_viewport = True
+        instance_obj.hide_render = True
+        
+        # Set up geometry nodes
+        print("Setting up geometry nodes...")
+        setup_geometry_nodes(base_obj, instance_obj)
+        print("✓ Geometry nodes setup attempted")
+        
+        # If geometry nodes already exist from previous run, update the instance object reference
+        for mod in base_obj.modifiers:
+            if mod.type == 'NODES' and mod.node_group:
+                for node in mod.node_group.nodes:
+                    if node.type == 'OBJECT_INFO':
+                        node.inputs['Object'].default_value = instance_obj
+                        print(f"✓ Updated Object Info reference in existing modifier: {mod.name}")
+        
+        # Add text labels
+        add_text_labels()
+        
+        # Set up camera and lighting
+        setup_camera_and_lighting()
+        
+        # Select the main orbital grid object
+        bpy.context.view_layer.objects.active = base_obj
+        base_obj.select_set(True)
+        
+        # Update view layer
+        bpy.context.view_layer.update()
+        
+        # Render viewport to PNG
+        frame_path = os.path.join(frames_dir, f"frame_{i:04d}.png")
+        print(f"Attempting to render to: {frame_path}")
+        try:
+            bpy.context.scene.render.filepath = frame_path
+            bpy.ops.render.render(write_still=True)  # Use camera render instead of viewport
+            print(f"✓ Rendered frame {i+1}: {frame_path}")
+            # Check if file exists
+            if os.path.exists(frame_path):
+                print(f"✓ File confirmed: {frame_path}")
+            else:
+                print(f"✗ File not found after render: {frame_path}")
+        except Exception as e:
+            print(f"✗ Render failed for frame {i+1}: {e}")
+    
+    print("="*60)
+    print("✓ ORBITAL VISUALIZATION COMPLETE - 10 FRAMES GENERATED")
+    print(f"  Frames saved to: {frames_dir}")
+    print("="*60)
 
-        def init():
-            for line, pt in zip(lines, pts):
-                line.set_data([], [])
-                line.set_3d_properties([])
-            
-            for trail_line in trail_lines:
-                trail_line.set_data([], [])
-                trail_line.set_3d_properties([])
-
-            return lines + pts + trail_lines
-
-        # Set initial camera position (disabled frame-based camera movement)
-        ax1.view_init(elev=CAMERA_ELEVATION, azim=CAMERA_AZIMUTH)
-
-        def frame_path(i):
-            # Disabled: camera position no longer changes with frame
-            return CAMERA_ELEVATION, CAMERA_AZIMUTH
-
-        def animate(i):
-            # Removed: elev, azim = frame_path(i)
-            # Removed: ax1.view_init(elev, azim)
-            
-            posValues = np.linspace(
-                -5,
-                5,
-                samples
-            )
-            
-            # Calculate current state
-            amplitudeValues = [
-                waveFunction.evaluate(
-                    x,
-                    timeFactor * i / TIME_SCALING_FACTOR
-                )
-                for x in posValues
-            ]
-
-            reValues = np.real(amplitudeValues)
-            imValues = np.imag(amplitudeValues)
-            probValues = np.absolute(
-                amplitudeValues
-            ) ** 2
-
-            ylist = [
-                (imValues, reValues),  # Only blue curve: x vs Im(ψ) vs Re(ψ)
-            ]
-
-            # Update main curves
-            for n, line in enumerate(lines):
-                line.set_data(
-                    posValues,
-                    ylist[n][0]
-                )
-                line.set_3d_properties(
-                    ylist[n][1]
-                )
-
-            # Update trail curves - only for blue curve
-            trail_idx = 0
-            for offset in range(TRAIL_OFFSET_STEP, TRAIL_OFFSET_STEP * TRAIL_COUNT + 1, TRAIL_OFFSET_STEP):
-                past_i = max(0, i - offset)
-                
-                # Calculate past state
-                past_amplitudeValues = [
-                    waveFunction.evaluate(
-                        x,
-                        timeFactor * past_i / TIME_SCALING_FACTOR
-                    )
-                    for x in posValues
-                ]
-
-                past_reValues = np.real(past_amplitudeValues)
-                past_imValues = np.imag(past_amplitudeValues)
-
-                past_ylist = [
-                    (past_imValues, past_reValues),  # Only blue curve trails
-                ]
-
-                # Update trail lines for this time offset
-                for n in range(1):  # Only 1 curve type now
-                    trail_lines[trail_idx].set_data(
-                        posValues,
-                        past_ylist[n][0]
-                    )
-                    trail_lines[trail_idx].set_3d_properties(
-                        past_ylist[n][1]
-                    )
-                    trail_idx += 1
-
-            fig.canvas.draw()
-            return lines + trail_lines
-
-        anim = animation.FuncAnimation(
-            fig,
-            animate,
-            init_func=init,
-            frames=frames,
-            interval=ANIMATION_INTERVAL,
-            blit=True
-        )
-
-        if saveName != None:
-            anim.save(
-                './video/animations/' + saveName + '.mp4',
-                fps = 30,
-                writer = 'avconv',
-                codec = 'libx264'
-            )
-
-        plt.show()
-
-p = Plotter()
-hs = HilbertSpace(
-    dim=HILBERT_DIM,
-    hamiltonianPotential=POTENTIAL_FUNCTION,
-    basis='QHO',
-    approxMethod=None,
-)
-psi = WaveFunction(hs, coeff=WAVE_COEFFICIENTS)
-#psi = WaveFunction(hs, lambda x: 1 if abs(x) < 5 else 0)
-print('c_n = ' + str(psi.coeff))
-
-p.plotWaveFunction3d(
-    psi,
-    samples=SAMPLING_POINTS,
-    frames=ANIMATION_FRAMES,
-    timeFactor=TIME_FACTOR,
-    saveName=None,
-)
-
-'''
-Ideas:
-
-- Take a state vetor and evolve it using the unitary evolution operator defined
-  as the exponentiated Hamiltonian. Recall that the Hamiltonian defines the 
-  energy eigenbasis. If you have an eigenbasis and eigenvalues, simply define
-  the Hamiltonian according to the spectral theorem. If you instead have a
-  Hamiltonian first, we have to decompose it into a finite-dimensional
-  approximation.
-
-  One method to do this may be to calculate the first n eigenstates and
-  eigenvalues of the Hamiltonian, and then to use spectral theorem to
-  simply define the Hamiltonian.
-
-- Long term goals may include determining the unitary evolution of a state in a
-  time-varying potential, determining the projection onto the eigenstate of an
-  observable O (to allow for measurements, which can be determined by sampling
-  our probability distribution in the corresponding observable picture)
-
-- Mapping the position wave function to the corresponding momentum picture using
-  Fourier transforms, and other methods?
-
-- Checking Vachaspati's hypothesis that the expectation value of a wave function is
-  related to the RMS value of a classical wave??? Not sure what he was thinking,
-  perhaps ask JJ.
-
-- Coherent states.
-'''
+if __name__ == "__main__":
+    main()
